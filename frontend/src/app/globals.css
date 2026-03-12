@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-primary-50: #eef4ff;
+  --color-primary-100: #dbe6ff;
+  --color-primary-200: #b9ceff;
+  --color-primary-300: #8db0ff;
+  --color-primary-400: #5f8dff;
+  --color-primary-500: #3b6cff;
+  --color-primary-600: #2a55e6;
+  --color-primary-700: #2144b8;
+  --color-primary-800: #1c3896;
+  --color-primary-900: #1a3278;
+
+  --color-secondary-50: #ecfdf5;
+  --color-secondary-100: #d1fae5;
+  --color-secondary-200: #a7f3d0;
+  --color-secondary-300: #6ee7b7;
+  --color-secondary-400: #34d399;
+  --color-secondary-500: #10b981;
+  --color-secondary-600: #059669;
+  --color-secondary-700: #047857;
+  --color-secondary-800: #065f46;
+  --color-secondary-900: #064e3b;
+
+  --color-accent-purple: #7C6CFF;
+  --color-accent-orange: #FF8A3D;
+  --color-accent-cyan: #35C9FF;
+
+  --color-base-50: #f8fafc;
+  --color-base-100: #f1f5f9;
+  --color-base-200: #e2e8f0;
+  --color-base-300: #cbd5e1;
+  --color-base-400: #94a3b8;
+  --color-base-500: #64748b;
+  --color-base-600: #475569;
+  --color-base-700: #334155;
+  --color-base-800: #1e293b;
+  --color-base-900: #0f172a;
+
+  --color-bg-base: #f6f8fb;
+  --color-bg-panel: #ffffff;
+  --color-bg-panelAlt: #f9fbff;
+  --color-bg-darkBase: #0f172a;
+  --color-bg-darkPanel: #1e293b;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 6px 18px rgba(0, 0, 0, 0.06);
+  --shadow-floating: 0 10px 30px rgba(0, 0, 0, 0.08);
+  --shadow-softGlow: 0 0 20px rgba(59, 108, 255, 0.25);
+
+  --font-sans: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  --font-mono: var(--font-geist-mono), Courier New, Courier, monospace;
+}
+
+@layer base {
+  :root {
+    --background: var(--color-bg-base);
+    --foreground: var(--color-base-900);
+    --panel: var(--color-bg-panel);
+    --border: var(--color-base-200);
+  }
+
+  .dark {
+    --background: var(--color-bg-darkBase);
+    --foreground: var(--color-base-50);
+    --panel: var(--color-bg-darkPanel);
+    --border: var(--color-base-800);
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-body);
+    @apply antialiased transition-colors duration-200;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+  }
+}
