@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XDP Traffic Monitor & Shield</title>
+    <!-- Use Inter font from Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <!-- Chart.js for real-time visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="dashboard-container">
+        <!-- Header Section -->
+        <header class="dashboard-header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="pulse-ring"></div>
+                    <div class="shield-icon">🛡️</div>
+                    <h1>XDP Layer 4 Monitor & Filter</h1>
+                </div>
+                <div class="status-indicator">
+                    <span id="status-dot" class="dot inactive"></span>
+                    <span id="status-text">OFFLINE</span>
+                </div>
+            </div>
+            <p class="subtitle">eBPF-powered packet dropping for <span class="highlight" id="interface-name">eth0</span>
+            </p>
+        </header>
+
+        <!-- Main Content -->
+        <main>
+            <!-- Controls Section -->
+            <section class="controls-panel card">
+                <h2>Mitigation Controls</h2>
+                <div class="control-actions">
+                    <button id="btn-start" class="btn btn-primary" onclick="startFilter()">
+                        <span class="icon">▶</span> Activate Shield
+                    </button>
+                    <button id="btn-stop" class="btn btn-danger" onclick="stopFilter()" disabled>
+                        <span class="icon">⏹</span> Deactivate
+                    </button>
+                </div>
+                <div id="action-message" class="message"></div>
+
+                <div class="active-rules">
+                    <h3>Hardcoded Kernel Rules:</h3>
+                    <ul>
+                        <li><span class="bad">Drop</span> ALL ICMP (Ping Flood)</li>
+                        <li><span class="bad">Drop</span> ALL UDP (UDP Flood)</li>
+                        <li><span class="bad">Drop</span> TCP SYN -> Port 80 (SYN Flood)</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- Dynamic Rules Section -->
+            <section class="rules-panel card">
+                <h2>Dynamic Blocking Rules</h2>
+                <div class="rule-inputs">
+                    <div class="input-group">
+                        <input type="text" id="ip-to-block" placeholder="Enter IP (e.g. 1.2.3.4)">
+                        <button class="btn btn-secondary" onclick="blockIP()">Block IP</button>
+                    </div>
+                    <div class="input-group">
+                        <input type="number" id="port-to-block" placeholder="Enter Port (e.g. 22)">
+                        <button class="btn btn-secondary" onclick="blockPort()">Block Port</button>
+                    </div>
+                </div>
+
+                <div class="rules-display">
+                    <div class="rules-column">
+                        <h3>Blocked IPs</h3>
+                        <ul id="blocked-ips-list" class="rule-list">
+                            <li class="empty-list">No IPs blocked.</li>
+                        </ul>
+                    </div>
+                    <div class="rules-column">
+                        <h3>Blocked Ports</h3>
+                        <ul id="blocked-ports-list" class="rule-list">
+                            <li class="empty-list">No ports blocked.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Statistics Section -->
+            <section class="stats-panel card">
+                <div class="stats-header">
+                    <h2>Live Traffic Insights</h2>
+                    <div class="live-badge">LIVE</div>
+                </div>
+
+                <h3 class="stats-section-title text-success">Incoming Traffic (Ingress)</h3>
+                <div class="stats-grid" id="stats-grid-ingress">
+                    <!-- Stats will be populated here by JS -->
+                    <div class="stat-card empty-state">
+                        <p>Waiting for filter activation...</p>
+                    </div>
+                </div>
+
+                <h3 class="stats-section-title text-info" style="margin-top: 1.5rem;">Outgoing Traffic (Egress)</h3>
+                <div class="stats-grid" id="stats-grid-egress">
+                    <!-- Stats will be populated here by JS -->
+                    <div class="stat-card empty-state">
+                        <p>Waiting for filter activation...</p>
+                    </div>
+                </div>
+
+                <h3 class="stats-section-title text-danger" style="margin-top: 1.5rem;">Dropped Threat Traffic (Drop)
+                </h3>
+                <div class="stats-grid" id="stats-grid-drops">
+                    <!-- Stats will be populated here by JS -->
+                    <div class="stat-card empty-state">
+                        <p>Waiting for filter activation...</p>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <canvas id="traffic-chart"></canvas>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Runs directly inside the Linux Kernel using eBPF</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+
+</html>
