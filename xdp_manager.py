@@ -39,9 +39,15 @@ class XDPFilter:
             return False
 
         try:
-            self.bpf = BPF(src_file=self.src_path)
-            
-            # Attach XDP for Ingress filtering
+            compat_header = os.path.join(self.base_dir, "bcc_compat.h")
+            cflags = [
+                "-Wno-unknown-warning-option", 
+                "-Wno-duplicate-decl-specifier", 
+                "-Wno-gnu-variable-sized-type-not-at-end",
+                "-include", compat_header
+            ]
+            self.bpf = BPF(src_file=self.src_path, cflags=cflags)
+                        # Attach XDP for Ingress filtering
             in_fn = self.bpf.load_func("drop_ddos", BPF.XDP)
             self.bpf.attach_xdp(self.device, in_fn, 0)
             
@@ -55,7 +61,13 @@ class XDPFilter:
             print(f"[+] Successfully attached XDP (Ingress) and TC (Egress) programs to {self.device}.")
             return True
         except Exception as e:
-            print(f"[-] Failed to attach BPF programs: {e}")
+            error_msg = f"[-] Failed to attach BPF programs: {e}"
+            print(error_msg)
+            try:
+                with open(os.path.join(self.base_dir, "xdp_error.log"), "w") as f:
+                    f.write(str(e))
+            except:
+                pass
             self.bpf = None
             self.is_running = False
             return False

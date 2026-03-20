@@ -58,6 +58,14 @@ static inline u64 bpf_ktime_get_ns() { return 0; }
 
 #endif /* KBUILD_MODNAME */
 
+/* ===================== KERNEL 6.4+ COMPATIBILITY ===================== */
+#ifndef BPF_LOAD_ACQ
+#define BPF_LOAD_ACQ 0
+#endif
+#ifndef BPF_STORE_REL
+#define BPF_STORE_REL 0
+#endif
+
 /* ===================== CONFIG ===================== */
 
 // Max SYN packets allowed per IP in time window

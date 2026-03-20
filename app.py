@@ -1,18 +1,19 @@
-from flask import Flask, render_template, jsonify, request
-from flask_cors import CORS
+from flask import Flask, render_template, jsonify, request  # type: ignore
+from flask_cors import CORS  # type: ignore
+from typing import Any
 import os
 import sys
 
 # Import the manager
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from xdp_manager import XDPFilter
+from xdp_manager import XDPFilter  # pyre-ignore[21]
 
 app = Flask(__name__)
 CORS(app)
 
 # Single instance of the XDP Filter
 # Ensure the device matches your network interface (e.g. eth0, wlan0)
-DEFAULT_DEVICE = "eth0"
+DEFAULT_DEVICE = "ens33"
 xdp_filter = XDPFilter(DEFAULT_DEVICE)
 
 @app.route("/")
@@ -129,7 +130,10 @@ def stop_filter():
 if __name__ == "__main__":
     # Ensure cleanup on unexpected exit
     import atexit
-    atexit.register(lambda: xdp_filter.stop() if xdp_filter.is_running else None)
+    def cleanup(*args: Any, **kwargs: Any) -> None:
+        if xdp_filter.is_running:
+            xdp_filter.stop()
+    atexit.register(cleanup)
     
     # Run the Flask app on all interfaces at port 5000
     print(f"[*] Starting XDP Web GUI on http://0.0.0.0:5000/ ...")
