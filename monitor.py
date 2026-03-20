@@ -288,6 +288,8 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
 
     # ── Bottom border ─────────────────────────────────────────────────────
     safe_addstr(win, h - 1, 0, "└" + "─" * (w - 2) + "┘", border_attr)
+    creator_str = " Created by Vipin Singh Rana "
+    safe_addstr(win, h - 1, w - len(creator_str) - 2, creator_str, curses.color_pair(C_DIM))
 
     win.noutrefresh()
 
