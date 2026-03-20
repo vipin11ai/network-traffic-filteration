@@ -237,7 +237,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
 
     # ── TOP TALKERS ───────────────────────────────────────────────────────
     row_left += 1
-    if row_left < h - 5:
+    if row_left < h - 7:
         row_left = draw_section_header(win, row_left, left_x, "🎯", "TOP TALKERS", C_WARN)
         draw_hline(win, row_left, left_x + 1, min(30, mid_x - left_x - 2), '─', curses.color_pair(C_WARN) | curses.A_DIM)
         row_left += 1
@@ -245,7 +245,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
         top_ips = xdp.get_top_ips(5)
         if top_ips:
             for i, (ip, count) in enumerate(top_ips):
-                if row_left >= h - 4:
+                if row_left >= h - 6:
                     break
                 safe_addstr(win, row_left, left_x + 1, f"  {ip}", curses.color_pair(C_WARN) | curses.A_BOLD)
                 safe_addstr(win, row_left, left_x + 18, fmt_num(count).rjust(12), curses.color_pair(C_WARN))
@@ -256,7 +256,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
 
     # ── AUTO-BLACKLIST ────────────────────────────────────────────────────
     row = max(row_left, row_right) + 1
-    if row < h - 4:
+    if row < h - 6:
         row = draw_section_header(win, row, left_x, "⚠ ", "AUTO-BLACKLISTED", C_BLACKLST)
         draw_hline(win, row, left_x + 1, min(30, w - 4), '─', curses.color_pair(C_BLACKLST) | curses.A_DIM)
         row += 1
@@ -264,7 +264,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
         active_bl = {ip: info for ip, info in blacklist.items() if info.get("active", False)}
         if active_bl:
             for ip, info in active_bl.items():
-                if row >= h - 3:
+                if row >= h - 5:
                     break
                 ttl = info.get("remaining_seconds", 0)
                 safe_addstr(win, row, left_x + 1, f"  {ip}", curses.color_pair(C_BLACKLST) | curses.A_BOLD)
@@ -274,17 +274,28 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
             safe_addstr(win, row, left_x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
 
     # ── Command bar separator ─────────────────────────────────────────────
-    cmd_row = h - 3
+    cmd_row = h - 5
     safe_addstr(win, cmd_row, 0, "├" + "─" * (w - 2) + "┤", border_attr)
 
+    # ── Help Steps ────────────────────────────────────────────────────────
+    help_row = h - 4
+    safe_addstr(win, help_row, 0, "│", border_attr)
+    safe_addstr(win, help_row, w - 1, "│", border_attr)
+    help_str = " Actions: type 'block ip <addr>', 'unblock port <num>', or 'quit' below"
+    safe_addstr(win, help_row, 2, help_str, curses.color_pair(C_DIM))
+
     # ── Feedback line ─────────────────────────────────────────────────────
-    fb_row = h - 2
+    fb_row = h - 3
     safe_addstr(win, fb_row, 0, "│", border_attr)
     safe_addstr(win, fb_row, w - 1, "│", border_attr)
 
     if last_feedback and (time.time() - feedback_ts) < FEEDBACK_DURATION:
         fb_color = C_INGRESS if last_feedback.startswith("[+]") else C_DROP
         safe_addstr(win, fb_row, 2, last_feedback, curses.color_pair(fb_color))
+
+    # ── Empty prompt line for input bar (so it doesn't flicker) ───────────
+    safe_addstr(win, h - 2, 0, "│", border_attr)
+    safe_addstr(win, h - 2, w - 1, "│", border_attr)
 
     # ── Bottom border ─────────────────────────────────────────────────────
     safe_addstr(win, h - 1, 0, "└" + "─" * (w - 2) + "┘", border_attr)
