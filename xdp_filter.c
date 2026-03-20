@@ -2,12 +2,61 @@
 // It uses BCC-specific includes (uapi/linux/*), macros (BPF_HASH), and
 // method-call syntax (.lookup(), .update()) that are NOT standard C.
 // IDE/clang errors in this file are expected and do not affect BCC compilation.
-#include <uapi/linux/if_ether.h>
-#include <uapi/linux/ip.h>
-#include <uapi/linux/tcp.h>
-#include <uapi/linux/udp.h>
-#include <uapi/linux/icmp.h>
-#include <uapi/linux/in.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <linux/icmp.h>
+#include <linux/in.h>
+
+#ifndef KBUILD_MODNAME
+/* 
+ * IDE Compatibility Layer:
+ * This block is ONLY for the IDE's benefit. It mocks BCC-specific syntax 
+ * that would otherwise cause syntax errors in common C analyzers.
+ */
+#include <linux/types.h>
+#include <linux/bpf.h>
+
+typedef __u64 u64;
+typedef __u32 u32;
+typedef __u16 u16;
+
+#define BPF_HASH(name, key_type, leaf_type) \
+    struct { \
+        leaf_type* (*lookup)(key_type*); \
+        int (*update)(key_type*, leaf_type*); \
+        int (*delete)(key_type*); \
+    } name
+
+#define BPF_ARRAY(name, leaf_type, size) \
+    struct { \
+        leaf_type* (*lookup)(int*); \
+        int (*update)(int*, leaf_type*); \
+    } name
+
+/* Mock Kernel Helpers */
+static inline u64 bpf_ktime_get_ns() { return 0; }
+
+#ifndef ETH_P_IP
+#define ETH_P_IP 0x0800
+#endif
+
+#ifndef XDP_PASS
+#define XDP_PASS 2
+#define XDP_DROP 1
+#endif
+
+#ifndef IPPROTO_TCP
+#define IPPROTO_TCP 6
+#define IPPROTO_UDP 17
+#define IPPROTO_ICMP 1
+#endif
+
+#define htons(x) (x)
+#define ntohs(x) (x)
+
+#endif /* KBUILD_MODNAME */
 
 /* ===================== CONFIG ===================== */
 
