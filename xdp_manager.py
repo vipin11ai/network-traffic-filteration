@@ -21,6 +21,10 @@ class XDPFilter:
         self._last_time: float = 0.0
         self._pps: dict = {"drops": {}, "ingress": {}, "egress": {}}
         
+        # IP-specific state for PPS
+        self._last_ip_counts: dict = {}
+        self._ip_pps: dict = {}
+        
         # Determine the absolute path of the C file relative to this script
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.src_path = os.path.join(self.base_dir, self.src_file)
@@ -200,7 +204,21 @@ class XDPFilter:
             stats = {"drops": {}, "ingress": {}, "egress": {}, "blocked_ips": {}, "blocked_ports": {}}
             
             def _proto_name(val: int) -> str:
-                return {1: "ICMP", 6: "TCP", 17: "UDP"}.get(val, f"Protocol {val}")
+                return {
+                    1: "ICMP", 
+                    6: "TCP", 
+                    17: "UDP",
+                    101: "HTTPS",
+                    102: "DNS",
+                    103: "FTP",
+                    104: "DHCP",
+                    105: "TCP-SYNACK",
+                    106: "TCP-FIN",
+                    107: "TCP-RST",
+                    108: "LAND-ATTACK",
+                    109: "ICMP-ECHO",
+                    110: "TCP-SYN"
+                }.get(val, f"Protocol {val}")
 
             def read_proto_map(bpf_map: Any, target_dict: dict) -> None:
                 for key, value in bpf_map.items():
@@ -245,7 +263,7 @@ class XDPFilter:
             return {"drops": {}, "ingress": {}, "egress": {}, "blocked_ips": {}, "blocked_ports": {}, "pps": {"drops": {}, "ingress": {}, "egress": {}}}
 
     def get_top_ips(self, limit: int = 5) -> list:
-        """Returns the top talkers by packet count."""
+        """Returns the top talkers by packet count, including current PPS."""
         if not self.is_running or self.bpf is None:
             return []
             
@@ -255,29 +273,67 @@ class XDPFilter:
             for key, value in ip_map.items():
                 ip_str = str(ipaddress.IPv4Address(struct.pack("I", key.value)))
                 counts[ip_str] = value.value
+            
+            # Update IP PPS
+            now = time.time()
+            dt = now - self._last_time # Use existing timing
+            
+            if dt > 0:
+                for ip, current_count in counts.items():
+                    last_count = self._last_ip_counts.get(ip, 0)
+                    rate = max(0, (current_count - last_count) / dt)
+                    self._ip_pps[ip] = int(rate)
+                
+                self._last_ip_counts = dict(counts)
+                # Note: self._last_time is updated in get_stats(), which is fine 
+                # as long as get_stats() and get_top_ips() are called in sequence.
                 
             # Sort by count descending and take top 'limit'
             sorted_ips = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-            return sorted_ips[:limit]  # pyre-ignore[16]
+            top_list = []
+            for ip, count in sorted_ips[:limit]:
+                pps = self._ip_pps.get(ip, 0)
+                top_list.append((ip, count, pps))
+            
+            return top_list
         except Exception as e:
             print(f"[-] Error reading ip_packet_counts: {e}")
             return []
 
     def get_attack_status(self) -> str:
         """Infers current attack status based on PPS drop rates."""
+        ingress_pps = self._pps.get("ingress", {})
         drop_pps = self._pps.get("drops", {})
+        
+        # Better: use the specialized flag counts
+        syn_pps = ingress_pps.get("TCP-SYN", 0)
+        synack_pps = ingress_pps.get("TCP-SYNACK", 0)
+        fin_pps = ingress_pps.get("TCP-FIN", 0)
+        rst_pps = ingress_pps.get("TCP-RST", 0)
+        land_pps = drop_pps.get("LAND-ATTACK", 0)
+        icmp_echo_pps = drop_pps.get("ICMP-ECHO", 0)
         
         tcp_drops = drop_pps.get("TCP", 0)
         icmp_drops = drop_pps.get("ICMP", 0)
         udp_drops = drop_pps.get("UDP", 0)
         
-        if tcp_drops > 1000:
+        if land_pps > 10:
+            return "UNDER ATTACK (LAND Attack)"
+        if tcp_drops > 1000 or syn_pps > 1000:
             return "UNDER ATTACK (TCP SYN Flood)"
-        elif icmp_drops > 50:
+        if synack_pps > 1000:
+            return "UNDER ATTACK (TCP SYN-ACK Flood)"
+        if fin_pps > 1000:
+            return "UNDER ATTACK (TCP FIN Flood)"
+        if rst_pps > 1000:
+            return "UNDER ATTACK (TCP RST Flood)"
+        if icmp_echo_pps > 100:
             return "UNDER ATTACK (ICMP Ping Flood)"
-        elif udp_drops > 1000:
+        if udp_drops > 1000:
             return "UNDER ATTACK (UDP Flood)"
-        elif sum(drop_pps.values()) > 500:
+            
+        total_drops = sum(drop_pps.values())
+        if total_drops > 500:
             return "UNDER ATTACK (Distributed Flood)"
             
         return "NORMAL"

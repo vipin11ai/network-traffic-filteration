@@ -26,6 +26,7 @@ def get_status():
     return jsonify({
         "status": "running" if xdp_filter.is_running else "stopped",
         "interface": xdp_filter.device,
+        "attack_status": xdp_filter.get_attack_status() if xdp_filter.is_running else "NORMAL",
         "stats": xdp_filter.get_stats(),
         "rules": xdp_filter.get_blocked_rules() if xdp_filter.is_running else {"ips": [], "ports": []}
     })

@@ -77,6 +77,18 @@ static inline u64 bpf_ktime_get_ns() { return 0; }
 // Blacklist duration = 10 seconds
 #define BLACKLIST_TIME_NS 10000000000ULL
 
+// Custom Protocol Identifiers for L7 tracking
+#define CUSTOM_HTTPS 101
+#define CUSTOM_DNS   102
+#define CUSTOM_FTP   103
+#define CUSTOM_DHCP  104
+#define CUSTOM_TCP_SYNACK 105
+#define CUSTOM_TCP_FIN    106
+#define CUSTOM_TCP_RST    107
+#define CUSTOM_LAND       108
+#define CUSTOM_ICMP_ECHO  109
+#define CUSTOM_TCP_SYN    110
+
 /* ===================== STRUCTS ===================== */
 
 struct rate_limit_entry {
@@ -134,7 +146,17 @@ int drop_ddos(struct xdp_md *ctx) {
 
     u64 now = bpf_ktime_get_ns();
 
-    // --- Threat Intelligence: Record all incoming packets per IP ---
+    // --- LAND Attack Detection ---
+    if (ip->saddr == ip->daddr) {
+        u32 land_proto = CUSTOM_LAND;
+        u64 *val = protocol_drops.lookup(&land_proto);
+        u64 cur_val = 1;
+        if (val) cur_val = *val + 1;
+        protocol_drops.update(&land_proto, &cur_val);
+        return XDP_DROP;
+    }
+
+    // --- Threat Intelligence: Record all incoming packets per IP (Total Talkers) ---
     u64 *count = ip_packet_counts.lookup(&src_ip);
     u64 new_count = 1;
     if (count) new_count = *count + 1;
@@ -164,19 +186,27 @@ int drop_ddos(struct xdp_md *ctx) {
     }
 
     // --- Dynamic Rule Check: Blocked Ports (PRIORITY 2) ---
+    u32 classified_proto = protocol;
     if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
-        u16 dest_port = 0;
+        u16 src_port = 0, dest_port = 0;
         if (protocol == IPPROTO_UDP) {
             struct udphdr *udp = (void *)ip + ihl;
             if ((void *)(udp + 1) <= data_end) {
+                src_port = ntohs(udp->source);
                 dest_port = ntohs(udp->dest);
             }
         } else {
             struct tcphdr *tcp = (void *)ip + ihl;
             if ((void *)(tcp + 1) <= data_end) {
+                src_port = ntohs(tcp->source);
                 dest_port = ntohs(tcp->dest);
             }
         }
+
+        if (src_port == 443 || dest_port == 443) classified_proto = CUSTOM_HTTPS;
+        else if (src_port == 53 || dest_port == 53) classified_proto = CUSTOM_DNS;
+        else if (src_port == 20 || dest_port == 20 || src_port == 21 || dest_port == 21) classified_proto = CUSTOM_FTP;
+        else if (src_port == 67 || dest_port == 67 || src_port == 68 || dest_port == 68) classified_proto = CUSTOM_DHCP;
 
         if (dest_port > 0) {
             u64 *port_drop_count = blocked_ports.lookup(&dest_port);
@@ -197,8 +227,14 @@ int drop_ddos(struct xdp_md *ctx) {
     
     // Policy: Drop all ICMP to prevent Ping Floods
     if (protocol == IPPROTO_ICMP) {
-        u64 *val = protocol_drops.lookup(&protocol);
+        u32 icmp_echo = CUSTOM_ICMP_ECHO;
+        u64 *val = protocol_drops.lookup(&icmp_echo);
         u64 cur_val = 1;
+        if (val) cur_val = *val + 1;
+        protocol_drops.update(&icmp_echo, &cur_val);
+
+        val = protocol_drops.lookup(&protocol);
+        cur_val = 1;
         if (val) cur_val = *val + 1;
         protocol_drops.update(&protocol, &cur_val);
         return XDP_DROP;
@@ -208,8 +244,15 @@ int drop_ddos(struct xdp_md *ctx) {
     if (protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (void *)ip + ihl;
         if ((void *)(tcp + 1) <= data_end) {
+            u32 tcp_flag_proto = 0;
+            if (tcp->syn && tcp->ack) tcp_flag_proto = CUSTOM_TCP_SYNACK;
+            else if (tcp->fin) tcp_flag_proto = CUSTOM_TCP_FIN;
+            else if (tcp->rst) tcp_flag_proto = CUSTOM_TCP_RST;
+
             // Check for valid SYN (SYN set, ACK not set)
             if (tcp->syn && !tcp->ack) {
+                tcp_flag_proto = CUSTOM_TCP_SYN;
+                
                 // Rate limiting logic
                 struct rate_limit_entry *entry = rate_limit_map.lookup(&src_ip);
                 if (entry) {
@@ -235,6 +278,13 @@ int drop_ddos(struct xdp_md *ctx) {
                     rate_limit_map.update(&src_ip, &new_entry);
                 }
             }
+
+            if (tcp_flag_proto > 0) {
+                u64 *f_val = protocol_ingress.lookup(&tcp_flag_proto);
+                u64 f_cur_val = 1;
+                if (f_val) f_cur_val = *f_val + 1;
+                protocol_ingress.update(&tcp_flag_proto, &f_cur_val);
+            }
         }
     }
 
@@ -243,6 +293,13 @@ int drop_ddos(struct xdp_md *ctx) {
     u64 cur_val = 1;
     if (val) cur_val = *val + 1;
     protocol_ingress.update(&protocol, &cur_val);
+
+    if (classified_proto != protocol) {
+        u64 *c_val = protocol_ingress.lookup(&classified_proto);
+        u64 c_cur_val = 1;
+        if (c_val) c_cur_val = *c_val + 1;
+        protocol_ingress.update(&classified_proto, &c_cur_val);
+    }
 
     return XDP_PASS; 
 }
@@ -268,12 +325,42 @@ int monitor_egress(struct __sk_buff *skb) {
         return 0;
 
     u32 protocol = ip->protocol;
+    u32 classified_proto = protocol;
+
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        u16 src_port = 0, dest_port = 0;
+        if (protocol == IPPROTO_UDP) {
+            struct udphdr *udp = (void *)ip + ihl;
+            if ((void *)(udp + 1) <= data_end) {
+                src_port = ntohs(udp->source);
+                dest_port = ntohs(udp->dest);
+            }
+        } else {
+            struct tcphdr *tcp = (void *)ip + ihl;
+            if ((void *)(tcp + 1) <= data_end) {
+                src_port = ntohs(tcp->source);
+                dest_port = ntohs(tcp->dest);
+            }
+        }
+
+        if (src_port == 443 || dest_port == 443) classified_proto = CUSTOM_HTTPS;
+        else if (src_port == 53 || dest_port == 53) classified_proto = CUSTOM_DNS;
+        else if (src_port == 20 || dest_port == 20 || src_port == 21 || dest_port == 21) classified_proto = CUSTOM_FTP;
+        else if (src_port == 67 || dest_port == 67 || src_port == 68 || dest_port == 68) classified_proto = CUSTOM_DHCP;
+    }
 
     // Record outgoing packet
     u64 *val = protocol_egress.lookup(&protocol);
     u64 cur_val = 1;
     if (val) cur_val = *val + 1;
     protocol_egress.update(&protocol, &cur_val);
+
+    if (classified_proto != protocol) {
+        u64 *c_val = protocol_egress.lookup(&classified_proto);
+        u64 c_cur_val = 1;
+        if (c_val) c_cur_val = *c_val + 1;
+        protocol_egress.update(&classified_proto, &c_cur_val);
+    }
 
     return 0; 
 }

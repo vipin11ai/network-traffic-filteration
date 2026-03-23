@@ -109,18 +109,25 @@ def draw_proto_table(win: Any, y: int, x: int, data: dict, color_pair: int, col_
         safe_addstr(win, y, x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
         return y + 1
 
-    for proto, count in sorted(data.items()):
-        if y >= h - 3:
-            break
-        label = f"  {proto}:"
-        value = fmt_num(count)
-        safe_addstr(win, y, x, label, curses.color_pair(color_pair))
-        safe_addstr(win, y, x + 10, value.rjust(12), curses.color_pair(color_pair) | curses.A_BOLD)
-        
+    # Sort by PPS descending, then by protocol name
+    sorted_data = []
+    for proto, count in data.items():
+        pps_val = 0
         if pps_data is not None and proto in pps_data:  # pyre-ignore[16]
             pps_val = pps_data[proto]  # pyre-ignore[16, 29]
-            pps_str = f"(+{fmt_num(pps_val)} pps)"
-            safe_addstr(win, y, x + 23, pps_str, curses.color_pair(C_DIM))
+        sorted_data.append((proto, count, pps_val))
+    
+    sorted_data.sort(key=lambda x: (x[2], x[0]), reverse=True)
+
+    for proto, count, pps_val in sorted_data:
+        if y >= h - 3:
+            break
+        
+        label = f"  {proto}:"
+        pps_str = f"{fmt_num(pps_val)} pps"
+        
+        safe_addstr(win, y, x, label, curses.color_pair(color_pair))
+        safe_addstr(win, y, x + 16, pps_str.rjust(14), curses.color_pair(color_pair) | curses.A_BOLD)
             
         y += 1
     return y
@@ -193,7 +200,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
     row_left = draw_proto_table(win, row_left + 1, left_x, drops, C_DROP, pps_data=pps.get("drops", {}))
 
     # ── Right column: INGRESS ─────────────────────────────────────────────
-    row_right = draw_section_header(win, row, mid_x, "📥", "INGRESS (Allowed)", C_INGRESS)
+    row_right = draw_section_header(win, row, mid_x, "📥", "Incoming Packets", C_INGRESS)
     draw_hline(win, row_right, mid_x + 1, min(22, w - mid_x - 3), '─', curses.color_pair(C_INGRESS) | curses.A_DIM)
     row_right = draw_proto_table(win, row_right + 1, mid_x, ingress, C_INGRESS, pps_data=pps.get("ingress", {}))
 
@@ -201,7 +208,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
     row = max(row_left, row_right) + 1
 
     # Left: EGRESS
-    row_left = draw_section_header(win, row, left_x, "📤", "EGRESS", C_EGRESS)
+    row_left = draw_section_header(win, row, left_x, "📤", "Outgoing Packets", C_EGRESS)
     draw_hline(win, row_left, left_x + 1, min(22, mid_x - left_x - 2), '─', curses.color_pair(C_EGRESS) | curses.A_DIM)
     row_left = draw_proto_table(win, row_left + 1, left_x, egress, C_EGRESS, pps_data=pps.get("egress", {}))
 
@@ -233,6 +240,30 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
         safe_addstr(win, row_right, mid_x + 8, port_str, curses.color_pair(C_RULES))
     else:
         safe_addstr(win, row_right, mid_x + 2, "Ports: (none)", curses.color_pair(C_DIM) | curses.A_DIM)
+    row_right += 2
+
+    # ── ATTACK ANALYSIS ───────────────────────────────────────────────────
+    if row_right < h - 6:
+        row_right = draw_section_header(win, row_right, mid_x, "⚔", "ATTACK ANALYSIS", C_DROP)
+        draw_hline(win, row_right, mid_x + 1, min(22, w - mid_x - 3), '─', curses.color_pair(C_DROP) | curses.A_DIM)
+        row_right += 1
+        
+        status = xdp.get_attack_status()
+        if status == "NORMAL":
+            safe_addstr(win, row_right, mid_x + 2, "STATUS: ", curses.color_pair(C_INGRESS))
+            safe_addstr(win, row_right, mid_x + 10, "NORMAL", curses.color_pair(C_INGRESS) | curses.A_BOLD)
+        else:
+            # Highlight the attack type
+            parts = status.split("(", 1)
+            main_status = parts[0].strip()
+            type_info = parts[1].replace(")", "").strip() if len(parts) > 1 else ""
+            
+            safe_addstr(win, row_right, mid_x + 2, "STATUS: ", curses.color_pair(C_DROP))
+            safe_addstr(win, row_right, mid_x + 10, main_status, curses.color_pair(C_DROP) | curses.A_BOLD)
+            row_right += 1
+            if type_info:
+                safe_addstr(win, row_right, mid_x + 2, "TYPE:   ", curses.color_pair(C_WARN))
+                safe_addstr(win, row_right, mid_x + 10, type_info, curses.color_pair(C_WARN) | curses.A_BOLD)
     row_right += 1
 
     # ── TOP TALKERS ───────────────────────────────────────────────────────
@@ -244,7 +275,7 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
         
         top_ips = xdp.get_top_ips(5)
         if top_ips:
-            for i, (ip, count) in enumerate(top_ips):
+            for i, (ip, count, _) in enumerate(top_ips):
                 if row_left >= h - 6:
                     break
                 safe_addstr(win, row_left, left_x + 1, f"  {ip}", curses.color_pair(C_WARN) | curses.A_BOLD)

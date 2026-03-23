@@ -9,6 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const statsGridIngress = document.getElementById('stats-grid-ingress');
     const statsGridEgress = document.getElementById('stats-grid-egress');
     const statsGridDrops = document.getElementById('stats-grid-drops');
+    const attackBanner = document.getElementById('attack-banner');
+    const attackBannerText = document.getElementById('attack-banner-text');
 
     // State
     let isRunning = false;
@@ -71,19 +73,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateUI(status) {
-        isRunning = status.is_running;
-        interfaceName.textContent = status.device;
+        isRunning = status.status === 'running';
+        interfaceName.textContent = status.interface;
 
         if (isRunning) {
             statusDot.className = 'dot active';
-            statusText.textContent = 'ACTIVE (FILTERING)';
-            statusText.style.color = 'var(--success)';
+            
+            // Handle Attack Status
+            const attackStatus = status.attack_status || "NORMAL";
+            if (attackStatus !== "NORMAL") {
+                statusText.textContent = `UNDER ATTACK: ${attackStatus}`;
+                statusText.style.color = 'var(--danger)';
+                statusDot.style.backgroundColor = 'var(--danger)';
+                statusDot.classList.add('pulse');
+                
+                // Show Banner
+                attackBanner.classList.remove('hidden');
+                attackBannerText.textContent = `CRITICAL: ${attackStatus} DETECTED! FILTER IS IN EFFECT.`;
+            } else {
+                statusText.textContent = 'ACTIVE (FILTERING)';
+                statusText.style.color = 'var(--success)';
+                statusDot.style.backgroundColor = 'var(--success)';
+                statusDot.classList.remove('pulse');
+                
+                // Hide Banner
+                attackBanner.classList.add('hidden');
+            }
+            
             btnStart.disabled = true;
             btnStop.disabled = false;
 
             // Start polling if not already
             if (!pollInterval) {
-                pollInterval = setInterval(checkStatus, 1500); // Poll every 1.5s
+                pollInterval = setInterval(checkStatus, 1000); // Poll every 1s
             }
 
             renderStats(status.stats);
@@ -91,6 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
             statusDot.className = 'dot inactive';
             statusText.textContent = 'OFFLINE';
             statusText.style.color = '';
+            statusDot.style.backgroundColor = '';
+            statusDot.classList.remove('pulse');
             btnStart.disabled = false;
             btnStop.disabled = true;
 
@@ -99,6 +123,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 clearInterval(pollInterval);
                 pollInterval = null;
             }
+
+            attackBanner.classList.add('hidden');
 
             const emptyHtml = `
                 <div class="stat-card empty-state">
@@ -111,7 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function renderStatsGroup(statsGroup, container, labelClass, labelText) {
+    function renderStatsGroup(statsGroup, ppsGroup, container, labelClass, labelText) {
         if (!statsGroup || Object.keys(statsGroup).length === 0) {
             container.innerHTML = `
                 <div class="stat-card empty-state">
@@ -122,16 +148,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let html = '';
-        const sortedKeys = Object.keys(statsGroup).sort();
+        const sortedKeys = Object.keys(statsGroup).sort((a, b) => (ppsGroup?.[b] || 0) - (ppsGroup?.[a] || 0));
 
         for (const proto of sortedKeys) {
             const count = statsGroup[proto];
-            const formatted = new Intl.NumberFormat().format(count);
+            const pps = ppsGroup?.[proto] || 0;
+            const formattedTotal = new Intl.NumberFormat().format(count);
+            const formattedPPS = new Intl.NumberFormat().format(pps);
 
             html += `
                 <div class="stat-card">
-                    <div class="stat-value ${labelClass}">${formatted}</div>
-                    <div class="stat-label">${proto} ${labelText}</div>
+                    <div class="stat-value ${labelClass}">${formattedPPS} <small>pps</small></div>
+                    <div class="stat-label">${proto}</div>
+                    <div class="stat-total">Total: ${formattedTotal}</div>
                 </div>
             `;
         }
@@ -142,15 +171,17 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderStats(stats) {
         if (!stats) return;
 
-        renderStatsGroup(stats.ingress, statsGridIngress, 'text-success', 'Ingress');
-        renderStatsGroup(stats.egress, statsGridEgress, 'text-info', 'Egress');
-        renderStatsGroup(stats.drops, statsGridDrops, 'text-danger', 'Drops');
+        const pps = stats.pps || { ingress: {}, egress: {}, drops: {} };
+
+        renderStatsGroup(stats.ingress, pps.ingress, statsGridIngress, 'text-success', 'Ingress');
+        renderStatsGroup(stats.egress, pps.egress, statsGridEgress, 'text-info', 'Egress');
+        renderStatsGroup(stats.drops, pps.drops, statsGridDrops, 'text-danger', 'Drops');
 
         updateChart(stats);
     }
 
     function updateChart(stats) {
-        if (!stats) return;
+        if (!stats || !stats.pps) return;
 
         const now = new Date();
         const timeLabel = now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
@@ -160,8 +191,10 @@ document.addEventListener('DOMContentLoaded', () => {
             chartData.labels.shift();
         }
 
+        const pps = stats.pps;
+
         // Process ingress
-        const inKeys = Object.keys(stats.ingress || {}).sort();
+        const inKeys = Object.keys(pps.ingress || {}).sort();
         inKeys.forEach((proto, index) => {
             const labelName = `[IN] ${proto}`;
             let datasetParams = trafficChart.data.datasets.find(d => d.label === labelName);
@@ -179,10 +212,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 trafficChart.data.datasets.push(datasetParams);
             }
 
-            const currentTotal = stats.ingress[proto] || 0;
-            const prevTotal = previousStats?.ingress?.[proto] || 0;
-            const count = Math.max(0, currentTotal - prevTotal);
-            datasetParams.data.push(count);
+            const val = pps.ingress[proto] || 0;
+            datasetParams.data.push(val);
 
             if (datasetParams.data.length > MAX_DATA_POINTS) {
                 datasetParams.data.shift();
@@ -190,7 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Process egress
-        const outKeys = Object.keys(stats.egress || {}).sort();
+        const outKeys = Object.keys(pps.egress || {}).sort();
         outKeys.forEach((proto, index) => {
             const labelName = `[OUT] ${proto}`;
             let datasetParams = trafficChart.data.datasets.find(d => d.label === labelName);
@@ -208,10 +239,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 trafficChart.data.datasets.push(datasetParams);
             }
 
-            const currentTotal = stats.egress[proto] || 0;
-            const prevTotal = previousStats?.egress?.[proto] || 0;
-            const count = Math.max(0, currentTotal - prevTotal);
-            datasetParams.data.push(count);
+            const val = pps.egress[proto] || 0;
+            datasetParams.data.push(val);
 
             if (datasetParams.data.length > MAX_DATA_POINTS) {
                 datasetParams.data.shift();
@@ -219,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Process drops
-        const dropKeys = Object.keys(stats.drops || {}).sort();
+        const dropKeys = Object.keys(pps.drops || {}).sort();
         dropKeys.forEach((proto, index) => {
             const labelName = `[DROP] ${proto}`;
             let datasetParams = trafficChart.data.datasets.find(d => d.label === labelName);
@@ -237,10 +266,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 trafficChart.data.datasets.push(datasetParams);
             }
 
-            const currentTotal = stats.drops[proto] || 0;
-            const prevTotal = previousStats?.drops?.[proto] || 0;
-            const count = Math.max(0, currentTotal - prevTotal);
-            datasetParams.data.push(count);
+            const val = pps.drops[proto] || 0;
+            datasetParams.data.push(val);
 
             if (datasetParams.data.length > MAX_DATA_POINTS) {
                 datasetParams.data.shift();
@@ -274,7 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/start', { method: 'POST' });
             const data = await res.json();
 
-            if (data.success) {
+            if (data.status === 'running') {
                 showMessage('Shield Activated!', false);
                 checkStatus();
             } else {
@@ -296,7 +323,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/stop', { method: 'POST' });
             const data = await res.json();
 
-            if (data.success) {
+            if (data.status === 'stopped') {
                 showMessage('Shield Deactivated.', false);
                 checkStatus();
             } else {
