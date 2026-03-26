@@ -20,11 +20,34 @@ import os
 import curses
 import time
 import signal
-from typing import Any, Optional
+import pyfiglet  # pyre-ignore[21]
+from typing import Any, Optional, List, Tuple
 
 # Ensure sibling imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xdp_manager import XDPFilter  # pyre-ignore[21]
+
+# ─── Traffic History ─────────────────────────────────────────────────────────
+
+class TrafficHistory:
+    """Tracks historical PPS data for charting."""
+    def __init__(self, max_samples: int = 100):
+        self.max_samples = max_samples
+        self.ingress: List[int] = []
+        self.drops: List[int] = []
+        self.egress: List[int] = []
+        self.top_talker: List[int] = []
+
+    def add_sample(self, ingress: int, drops: int, egress: int, top_talker: int = 0):
+        self.ingress.append(ingress)
+        self.drops.append(drops)
+        self.egress.append(egress)
+        self.top_talker.append(top_talker)
+        if len(self.ingress) > self.max_samples:
+            self.ingress.pop(0)
+            self.drops.pop(0)
+            self.egress.pop(0)
+            self.top_talker.pop(0)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,6 +70,17 @@ C_HEADER   = 10
 C_DIM      = 11
 C_WARN     = 12
 
+# Rainbow colors for lolcat effect
+C_RAINBOW_START = 20  # Starting index for rainbow pairs
+RAINBOW_COLORS = [
+    curses.COLOR_RED,
+    curses.COLOR_YELLOW,
+    curses.COLOR_GREEN,
+    curses.COLOR_CYAN,
+    curses.COLOR_BLUE,
+    curses.COLOR_MAGENTA,
+]
+
 
 def init_colors():
     """Set up color pairs for the TUI."""
@@ -64,6 +98,10 @@ def init_colors():
     curses.init_pair(C_HEADER,   curses.COLOR_WHITE,   -1)
     curses.init_pair(C_DIM,      curses.COLOR_WHITE,   -1)
     curses.init_pair(C_WARN,     curses.COLOR_YELLOW,  -1)
+
+    # Initialize rainbow pairs
+    for i, color in enumerate(RAINBOW_COLORS):
+        curses.init_pair(C_RAINBOW_START + i, color, -1)
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -93,6 +131,46 @@ def draw_hline(win: Any, y: int, x: int, length: int, ch: str = '─', attr: int
     safe_addstr(win, y, x, ch * length, attr)
 
 
+def draw_chart(win: Any, y: int, x: int, width: int, height: int, history: List[int], color_pair: int, label: str) -> int:
+    """Draw a simple ASCII bar chart."""
+    if not history or width < 5 or height < 2:
+        return y
+
+    safe_addstr(win, y, x, label, curses.color_pair(color_pair) | curses.A_BOLD)
+    y += 1
+    
+    max_val = max(history) if history else 1
+    if max_val == 0: max_val = 1
+    
+    # Use block characters for bars
+    chars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    
+    start_idx = max(0, len(history) - (width - 2))
+    chart_data: List[int] = history[start_idx:]  # type: ignore
+    for i, val in enumerate(chart_data):
+        bar_h = int((val / max_val) * (height * 8))
+        for r in range(height):
+            char_idx = min(8, bar_h - (r * 8))
+            if char_idx > 0:
+                safe_addstr(win, y + height - 1 - r, x + i, chars[char_idx], curses.color_pair(color_pair))  # type: ignore
+    
+    safe_addstr(win, y + height, x, f"Max: {fmt_num(max_val)} PPS", curses.color_pair(C_DIM))
+    return y + height + 1
+
+
+def draw_rainbow_text(win: Any, y: int, x: int, text: str) -> int:
+    """Draw text with a vibrant rainbow (lolcat) effect. Returns next y."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        for j, char in enumerate(line):
+            if char.isspace():
+                continue
+            # Smoother color rotation
+            color_idx = (i + j // 2) % len(RAINBOW_COLORS)
+            safe_addstr(win, y + i, x + j, char, curses.color_pair(C_RAINBOW_START + color_idx) | curses.A_BOLD)
+    return y + len(lines)
+
+
 # ─── Panel drawing ───────────────────────────────────────────────────────────
 
 def draw_section_header(win: Any, y: int, x: int, icon: str, title: str, color_pair: int) -> int:
@@ -104,7 +182,6 @@ def draw_section_header(win: Any, y: int, x: int, icon: str, title: str, color_p
 
 def draw_proto_table(win: Any, y: int, x: int, data: dict, color_pair: int, col_width: int = 24, pps_data: Optional[dict] = None) -> int:
     """Draw a protocol:count table. Returns the next y position."""
-    h, w = win.getmaxyx()
     if not data:
         safe_addstr(win, y, x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
         return y + 1
@@ -113,14 +190,14 @@ def draw_proto_table(win: Any, y: int, x: int, data: dict, color_pair: int, col_
     sorted_data = []
     for proto, count in data.items():
         pps_val = 0
-        if pps_data is not None and proto in pps_data:  # pyre-ignore[16]
-            pps_val = pps_data[proto]  # pyre-ignore[16, 29]
+        if pps_data is not None and proto in pps_data:  # type: ignore
+            pps_val = pps_data[proto]  # type: ignore
         sorted_data.append((proto, count, pps_val))
     
     sorted_data.sort(key=lambda x: (x[2], x[0]), reverse=True)
 
     for proto, count, pps_val in sorted_data:
-        if y >= h - 3:
+        if y >= 195: # Safety limit for pad
             break
         
         label = f"  {proto}:"
@@ -128,85 +205,90 @@ def draw_proto_table(win: Any, y: int, x: int, data: dict, color_pair: int, col_
         
         safe_addstr(win, y, x, label, curses.color_pair(color_pair))
         safe_addstr(win, y, x + 16, pps_str.rjust(14), curses.color_pair(color_pair) | curses.A_BOLD)
-            
         y += 1
     return y
 
 
-def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -> None:
-    """Render the full dashboard layout."""
-    h, w = win.getmaxyx()
-    if h < 10 or w < 40:
-        safe_addstr(win, 0, 0, "Terminal too small. Resize to at least 40x10.", curses.color_pair(C_DROP))
-        return
-
+def draw_dashboard(win: Any, xdp: Any, history: TrafficHistory, last_feedback: str, feedback_ts: float, term_w: int, term_h: int) -> int:
+    """Render the full dashboard layout. Returns the total used height."""
+    w = term_w
     win.erase()
+    if term_h < 10 or term_w < 40:
+        safe_addstr(win, 0, 0, "Terminal too small.", curses.color_pair(C_DROP))
+        return 1
 
-    # Title bar
+    # Title Banner
+    banner_text = "Dos Karega ?"
+    fig = pyfiglet.Figlet(font='slant', width=w-4)
+    banner_ascii = fig.renderText(banner_text)
+    banner_lines = banner_ascii.splitlines()
+    banner_height = len(banner_lines)
+    banner_width = max(len(l) for l in banner_lines) if banner_lines else 0
+    center_x = max(2, (w - banner_width) // 2)
+    draw_rainbow_text(win, 1, center_x, banner_ascii)
+
+    # Traffic Charts
+    row = 1 + banner_height + 1
+    safe_addstr(win, row, 2, "📈 LIVE TRAFFIC (PPS)", curses.color_pair(C_HEADER) | curses.A_BOLD)
+    draw_hline(win, row + 1, 2, w - 4, '─', curses.color_pair(C_DIM))
+    row += 2
+    row = draw_chart(win, row, 2, w - 4, 6, history.ingress, C_INGRESS, "INGRESS (INCOMING)")
+    row = draw_chart(win, row, 2, w - 4, 3, history.top_talker, C_WARN, "TOP TALKER (ACTIVE IP)")
+    row = draw_chart(win, row, 2, w - 4, 2, history.drops, C_DROP, "DROPS (BLOCKED)")
+    row += 1
+
+    # System Status Info
     now_str = time.strftime("%H:%M:%S")
-    title = f" XDP Network Monitor "
     dev_label = f" {xdp.device} "
     status_icon = "●" if xdp.is_running else "○"
     status_color = C_INGRESS if xdp.is_running else C_DROP
     status_label = " ACTIVE " if xdp.is_running else " STOPPED "
-
-    # Top border
+    
     border_attr = curses.color_pair(C_BORDER) | curses.A_DIM
     safe_addstr(win, 0, 0, "┌" + "─" * (w - 2) + "┐", border_attr)
-
+    
     attack_status = xdp.get_attack_status()
     attack_color = C_DROP if "UNDER ATTACK" in attack_status else C_DIM
-
-    # Title line
-    safe_addstr(win, 1, 0, "│", border_attr)
-    safe_addstr(win, 1, w - 1, "│", border_attr)
-    center_x = max(1, (w - len(title)) // 2)
-    safe_addstr(win, 1, center_x, title, curses.color_pair(C_TITLE) | curses.A_BOLD)
-    safe_addstr(win, 1, 2, dev_label, curses.color_pair(C_HEADER) | curses.A_DIM)
     
-    # Attack status banner
+    info_row = row
+    safe_addstr(win, info_row, 2, dev_label, curses.color_pair(C_HEADER) | curses.A_DIM)
     if attack_status != "NORMAL":
-        safe_addstr(win, 1, center_x + len(title) + 2, f" {attack_status} ", curses.color_pair(attack_color) | curses.A_BOLD)
+        safe_addstr(win, info_row, 2 + len(dev_label) + 2, f" {attack_status} ", curses.color_pair(attack_color) | curses.A_BOLD)
     
-    safe_addstr(win, 1, w - len(now_str) - len(status_label) - 5, status_icon, curses.color_pair(status_color) | curses.A_BOLD)
-    safe_addstr(win, 1, w - len(now_str) - len(status_label) - 3, status_label, curses.color_pair(status_color))
-    safe_addstr(win, 1, w - len(now_str) - 2, now_str, curses.color_pair(C_DIM))
+    safe_addstr(win, info_row, w - len(now_str) - len(status_label) - 5, status_icon, curses.color_pair(status_color) | curses.A_BOLD)
+    safe_addstr(win, info_row, w - len(now_str) - len(status_label) - 3, status_label, curses.color_pair(status_color))
+    safe_addstr(win, info_row, w - len(now_str) - 2, now_str, curses.color_pair(C_DIM))
+    row += 1
+    safe_addstr(win, row, 0, "├" + "─" * (w - 2) + "┤", border_attr)
+    row += 1
 
-    safe_addstr(win, 2, 0, "├" + "─" * (w - 2) + "┤", border_attr)
-
-    # ── Fetch data ────────────────────────────────────────────────────────
+    # Fetch Data
     stats = xdp.get_stats()
     blacklist = xdp.get_blacklist()
     rules = xdp.get_blocked_rules()
-
+    
     drops   = stats.get("drops", {})
     ingress = stats.get("ingress", {})
     egress  = stats.get("egress", {})
     pps     = stats.get("pps", {})
 
-    # ── Two-column layout ─────────────────────────────────────────────────
+    # Two-column content
+    content_start_row = row
     left_x = 2
     mid_x = max(w // 2, 28)
-    row = 3
 
-    # Side borders for content area
-    for r in range(3, h - 3):
-        safe_addstr(win, r, 0, "│", border_attr)
-        safe_addstr(win, r, w - 1, "│", border_attr)
-
-    # ── Left column: DROPS ────────────────────────────────────────────────
-    row_left = draw_section_header(win, row, left_x, "🛡", "DROPPED PACKETS", C_DROP)
+    # Left: DROPS
+    row_left = draw_section_header(win, content_start_row, left_x, "🛡", "DROPPED PACKETS", C_DROP)
     draw_hline(win, row_left, left_x + 1, min(22, mid_x - left_x - 2), '─', curses.color_pair(C_DROP) | curses.A_DIM)
     row_left = draw_proto_table(win, row_left + 1, left_x, drops, C_DROP, pps_data=pps.get("drops", {}))
 
-    # ── Right column: INGRESS ─────────────────────────────────────────────
-    row_right = draw_section_header(win, row, mid_x, "📥", "Incoming Packets", C_INGRESS)
+    # Right: INGRESS
+    row_right = draw_section_header(win, content_start_row, mid_x, "📥", "Incoming Packets", C_INGRESS)
     draw_hline(win, row_right, mid_x + 1, min(22, w - mid_x - 3), '─', curses.color_pair(C_INGRESS) | curses.A_DIM)
     row_right = draw_proto_table(win, row_right + 1, mid_x, ingress, C_INGRESS, pps_data=pps.get("ingress", {}))
 
-    # ── Next row pair ─────────────────────────────────────────────────────
     row = max(row_left, row_right) + 1
-
+    
     # Left: EGRESS
     row_left = draw_section_header(win, row, left_x, "📤", "Outgoing Packets", C_EGRESS)
     draw_hline(win, row_left, left_x + 1, min(22, mid_x - left_x - 2), '─', curses.color_pair(C_EGRESS) | curses.A_DIM)
@@ -216,20 +298,14 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
     row_right = draw_section_header(win, row, mid_x, "🚫", "BLOCKED RULES", C_RULES)
     draw_hline(win, row_right, mid_x + 1, min(22, w - mid_x - 3), '─', curses.color_pair(C_RULES) | curses.A_DIM)
     row_right += 1
-
+    
     blocked_ips = rules.get("ips", [])
     blocked_ports = rules.get("ports", [])
-
     if blocked_ips:
         safe_addstr(win, row_right, mid_x + 1, "IPs:", curses.color_pair(C_RULES) | curses.A_DIM)
-        # Wrap IPs across lines
-        ip_text: str = ", ".join(blocked_ips)
-        avail: int = w - mid_x - 8
-        while ip_text and row_right < h - 4:
-            chunk: str = ip_text[:avail]  # pyre-ignore[16]
-            safe_addstr(win, row_right, mid_x + 7, chunk, curses.color_pair(C_RULES))
-            ip_text = ip_text[avail:]  # pyre-ignore[16]
-            row_right += 1
+        ip_text = ", ".join(blocked_ips)
+        safe_addstr(win, row_right, mid_x + 7, ip_text, curses.color_pair(C_RULES))
+        row_right += 1
     else:
         safe_addstr(win, row_right, mid_x + 2, "IPs:   (none)", curses.color_pair(C_DIM) | curses.A_DIM)
         row_right += 1
@@ -242,110 +318,92 @@ def draw_dashboard(win: Any, xdp: Any, last_feedback: str, feedback_ts: float) -
         safe_addstr(win, row_right, mid_x + 2, "Ports: (none)", curses.color_pair(C_DIM) | curses.A_DIM)
     row_right += 2
 
-    # ── ATTACK ANALYSIS ───────────────────────────────────────────────────
-    if row_right < h - 6:
-        row_right = draw_section_header(win, row_right, mid_x, "⚔", "ATTACK ANALYSIS", C_DROP)
-        draw_hline(win, row_right, mid_x + 1, min(22, w - mid_x - 3), '─', curses.color_pair(C_DROP) | curses.A_DIM)
-        row_right += 1
-        
-        status = xdp.get_attack_status()
-        if status == "NORMAL":
-            safe_addstr(win, row_right, mid_x + 2, "STATUS: ", curses.color_pair(C_INGRESS))
-            safe_addstr(win, row_right, mid_x + 10, "NORMAL", curses.color_pair(C_INGRESS) | curses.A_BOLD)
-        else:
-            # Highlight the attack type
-            parts = status.split("(", 1)
-            main_status = parts[0].strip()
-            type_info = parts[1].replace(")", "").strip() if len(parts) > 1 else ""
-            
-            safe_addstr(win, row_right, mid_x + 2, "STATUS: ", curses.color_pair(C_DROP))
-            safe_addstr(win, row_right, mid_x + 10, main_status, curses.color_pair(C_DROP) | curses.A_BOLD)
-            row_right += 1
-            if type_info:
-                safe_addstr(win, row_right, mid_x + 2, "TYPE:   ", curses.color_pair(C_WARN))
-                safe_addstr(win, row_right, mid_x + 10, type_info, curses.color_pair(C_WARN) | curses.A_BOLD)
+    # Attack Analysis
+    row_right = draw_section_header(win, row_right, mid_x, "⚔", "ATTACK ANALYSIS", C_DROP)
+    draw_hline(win, row_right, mid_x + 1, min(22, w - mid_x - 3), '─', curses.color_pair(C_DROP) | curses.A_DIM)
     row_right += 1
+    if attack_status == "NORMAL":
+        safe_addstr(win, row_right, mid_x + 2, "STATUS: NORMAL", curses.color_pair(C_INGRESS))
+    else:
+        safe_addstr(win, row_right, mid_x + 2, f"STATUS: {attack_status}", curses.color_pair(C_DROP) | curses.A_BOLD)
+    row_right += 2
 
-    # ── TOP TALKERS ───────────────────────────────────────────────────────
+    # Top Talkers
     row_left += 1
-    if row_left < h - 7:
-        row_left = draw_section_header(win, row_left, left_x, "🎯", "TOP TALKERS", C_WARN)
-        draw_hline(win, row_left, left_x + 1, min(30, mid_x - left_x - 2), '─', curses.color_pair(C_WARN) | curses.A_DIM)
-        row_left += 1
-        
-        top_ips = xdp.get_top_ips(5)
-        if top_ips:
-            for i, (ip, count, _) in enumerate(top_ips):
-                if row_left >= h - 6:
-                    break
-                safe_addstr(win, row_left, left_x + 1, f"  {ip}", curses.color_pair(C_WARN) | curses.A_BOLD)
-                safe_addstr(win, row_left, left_x + 18, fmt_num(count).rjust(12), curses.color_pair(C_WARN))
-                row_left += 1
-        else:
-            safe_addstr(win, row_left, left_x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
+    row_left = draw_section_header(win, row_left, left_x, "🎯", "TOP TALKERS", C_WARN)
+    draw_hline(win, row_left, left_x + 1, min(30, mid_x - left_x - 2), '─', curses.color_pair(C_WARN) | curses.A_DIM)
+    row_left += 1
+    top_ips = xdp.get_top_ips(5)
+    if top_ips:
+        for ip, count, _ in top_ips:
+            safe_addstr(win, row_left, left_x + 1, f"  {ip}", curses.color_pair(C_WARN) | curses.A_BOLD)
+            safe_addstr(win, row_left, left_x + 18, fmt_num(count).rjust(12), curses.color_pair(C_WARN))
             row_left += 1
+    else:
+        safe_addstr(win, row_left, left_x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
+        row_left += 1
 
-    # ── AUTO-BLACKLIST ────────────────────────────────────────────────────
+    # Auto-Blacklist
     row = max(row_left, row_right) + 1
-    if row < h - 6:
-        row = draw_section_header(win, row, left_x, "⚠ ", "AUTO-BLACKLISTED", C_BLACKLST)
-        draw_hline(win, row, left_x + 1, min(30, w - 4), '─', curses.color_pair(C_BLACKLST) | curses.A_DIM)
+    row = draw_section_header(win, row, left_x, "⚠ ", "AUTO-BLACKLISTED", C_BLACKLST)
+    draw_hline(win, row, left_x + 1, min(30, w - 4), '─', curses.color_pair(C_BLACKLST) | curses.A_DIM)
+    row += 1
+    active_bl = {ip: info for ip, info in blacklist.items() if info.get("active", False)}
+    if active_bl:
+        for ip, info in active_bl.items():
+            ttl = info.get("remaining_seconds", 0)
+            safe_addstr(win, row, left_x + 1, f"  {ip}", curses.color_pair(C_BLACKLST) | curses.A_BOLD)
+            safe_addstr(win, row, left_x + 20, f"(expires in {ttl}s)", curses.color_pair(C_BLACKLST) | curses.A_DIM)
+            row += 1
+    else:
+        safe_addstr(win, row, left_x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
         row += 1
 
-        active_bl = {ip: info for ip, info in blacklist.items() if info.get("active", False)}
-        if active_bl:
-            for ip, info in active_bl.items():
-                if row >= h - 5:
-                    break
-                ttl = info.get("remaining_seconds", 0)
-                safe_addstr(win, row, left_x + 1, f"  {ip}", curses.color_pair(C_BLACKLST) | curses.A_BOLD)
-                safe_addstr(win, row, left_x + 20, f"(expires in {ttl}s)", curses.color_pair(C_BLACKLST) | curses.A_DIM)
-                row += 1
-        else:
-            safe_addstr(win, row, left_x + 2, "(none)", curses.color_pair(C_DIM) | curses.A_DIM)
+    # Final side borders and bottom border
+    for r in range(1, row):
+        safe_addstr(win, r, 0, "│", border_attr)
+        safe_addstr(win, r, w - 1, "│", border_attr)
+    safe_addstr(win, row, 0, "└" + "─" * (w - 2) + "┘", border_attr)
+    row += 1
 
-    # ── Command bar separator ─────────────────────────────────────────────
-    cmd_row = h - 5
-    safe_addstr(win, cmd_row, 0, "├" + "─" * (w - 2) + "┤", border_attr)
-
-    # ── Help Steps ────────────────────────────────────────────────────────
-    help_row = h - 4
-    safe_addstr(win, help_row, 0, "│", border_attr)
-    safe_addstr(win, help_row, w - 1, "│", border_attr)
-    help_str = " Actions: type 'block ip <addr>', 'unblock port <num>', or 'quit' below"
-    safe_addstr(win, help_row, 2, help_str, curses.color_pair(C_DIM))
-
-    # ── Feedback line ─────────────────────────────────────────────────────
-    fb_row = h - 3
-    safe_addstr(win, fb_row, 0, "│", border_attr)
-    safe_addstr(win, fb_row, w - 1, "│", border_attr)
-
+    # Feedback and Footer
     if last_feedback and (time.time() - feedback_ts) < FEEDBACK_DURATION:
         fb_color = C_INGRESS if last_feedback.startswith("[+]") else C_DROP
-        safe_addstr(win, fb_row, 2, last_feedback, curses.color_pair(fb_color))
+        safe_addstr(win, row, 2, str(last_feedback), curses.color_pair(fb_color) | curses.A_BOLD)
+        row += 1
 
-    # ── Empty prompt line for input bar (so it doesn't flicker) ───────────
-    safe_addstr(win, h - 2, 0, "│", border_attr)
-    safe_addstr(win, h - 2, w - 1, "│", border_attr)
+    # Footer
+    creator_text = "created by vipin singh rana"
+    team_text = "by team knights"
+    try:
+        row += 1
+        if term_h > 40:
+            f_footer = pyfiglet.Figlet(font='ansi_shadow', width=w)
+            f_lines = f_footer.renderText(creator_text).splitlines()
+            t_lines = f_footer.renderText(team_text).splitlines()
+            for line in f_lines:
+                safe_addstr(win, row, (w - len(str(line))) // 2, str(line), curses.color_pair(C_DIM))
+                row += 1
+            row += 1
+            for line in t_lines:
+                safe_addstr(win, row, (w - len(str(line))) // 2, str(line), curses.color_pair(C_TITLE) | curses.A_BOLD)
+                row += 1
+        else:
+            safe_addstr(win, row, 2, team_text, curses.color_pair(C_TITLE) | curses.A_BOLD)
+            safe_addstr(win, row, w - len(creator_text) - 4, creator_text, curses.color_pair(C_DIM) | curses.A_BOLD)
+            row += 1
+    except: pass
 
-    # ── Bottom border ─────────────────────────────────────────────────────
-    safe_addstr(win, h - 1, 0, "└" + "─" * (w - 2) + "┘", border_attr)
-    creator_str = " Created by Vipin Singh Rana "
-    safe_addstr(win, h - 1, w - len(creator_str) - 2, creator_str, curses.color_pair(C_DIM))
-
-    win.noutrefresh()
-
+    return row + 2
 
 # ─── Command processing ──────────────────────────────────────────────────────
 
 def process_command(xdp: Any, cmd_str: str) -> str:
     """Process a user command. Returns a feedback message string."""
-    parts = cmd_str.strip().lower().split()
-    if not parts:
-        return ""
-
-    if parts[0] in ("quit", "q", "exit"):
-        return "__QUIT__"
+    parts = str(cmd_str).strip().lower().split()
+    if not parts: return ""
+    if parts[0] in ("quit", "q", "exit"): return "__QUIT__"
+    if parts[0] == "help": return "[+] Commands: block ip <addr>, unblock ip <addr>, block port <num>, unblock port <num>, quit"
 
     if len(parts) == 3 and parts[0] == "block" and parts[1] == "ip":
         ok = xdp.block_ip(parts[2])
@@ -415,8 +473,10 @@ def main(stdscr: "curses.window") -> None:  # type: ignore[name-defined]
     init_colors()
 
     device = sys.argv[1] if len(sys.argv) > 1 else "eth0"
-
     xdp = XDPFilter(device, src_file="xdp_filter.c")
+    
+    history: Any = TrafficHistory(200)
+
     if not xdp.start():
         curses.curs_set(0)
         stdscr.nodelay(False)
@@ -425,7 +485,6 @@ def main(stdscr: "curses.window") -> None:  # type: ignore[name-defined]
         stdscr.addstr(1, 0, "    Make sure you're running as root and bcc is installed.")
         stdscr.addstr(2, 0, "    Press any key to exit.")
         stdscr.refresh()
-        stdscr.nodelay(False)
         stdscr.getch()
         return
 
@@ -433,14 +492,43 @@ def main(stdscr: "curses.window") -> None:  # type: ignore[name-defined]
     last_feedback: str = ""
     feedback_ts: float = 0.0
     last_draw: float = 0.0
+    scroll_pos: int = 0
+    total_content_height: int = 100
+
+    # Create a large pad for the dashboard content
+    # We'll re-create or resize it if terminal width changes
+    h, w = stdscr.getmaxyx()
+    dashboard_pad: Any = curses.newpad(200, w)
 
     try:
         while True:
             now = time.time()
+            h, w = stdscr.getmaxyx()
 
             # Redraw dashboard at REFRESH_INTERVAL
             if float(now) - float(last_draw) >= REFRESH_INTERVAL:
-                draw_dashboard(stdscr, xdp, last_feedback, feedback_ts)
+                # Update history
+                stats = xdp.get_stats()
+                pps = stats.get("pps", {})
+                top_ips = xdp.get_top_ips(1)
+                top_pps = top_ips[0][2] if top_ips else 0
+                
+                # Get total PPS across all protocols
+                in_pps = sum(pps.get("ingress", {}).values())
+                out_pps = sum(pps.get("egress", {}).values())
+                drop_pps = sum(pps.get("drops", {}).values())
+                history.add_sample(in_pps, drop_pps, out_pps, top_pps)
+
+                total_content_height = draw_dashboard(dashboard_pad, xdp, history, last_feedback, feedback_ts, w, h)
+                
+                # Refresh pad area to screen
+                # Pad coordinates: y, x (in pad) | screen y, x | screen height, width
+                # We leave space at the bottom for the input bar (h-2)
+                try:
+                    dashboard_pad.refresh(scroll_pos, 0, 0, 0, h - 3, w - 1)
+                except curses.error:
+                    pass
+
                 draw_input_bar(stdscr, input_buf)
                 curses.doupdate()
                 last_draw = now
@@ -452,30 +540,49 @@ def main(stdscr: "curses.window") -> None:  # type: ignore[name-defined]
                 ch = -1
 
             if ch == -1:
-                # No input, continue to next frame. `halfdelay` already throttles the loop context
                 continue
 
             # Handle resize
             if ch == curses.KEY_RESIZE:
                 stdscr.clear()
-                last_draw = 0  # force redraw
+                h, w = stdscr.getmaxyx()
+                dashboard_pad = curses.newpad(200, w)
+                last_draw = 0 
+                continue
+
+            # Scrolling
+            if ch == curses.KEY_DOWN:
+                scroll_pos = min(scroll_pos + 1, max(0, total_content_height - (h - 3)))  # pyre-ignore
+                last_draw = 0
+                continue
+            if ch == curses.KEY_UP:
+                scroll_pos = max(0, scroll_pos - 1)  # pyre-ignore
+                last_draw = 0
+                continue
+            if ch in (curses.KEY_NPAGE, 338): # Page Down
+                scroll_pos = min(scroll_pos + 10, max(0, total_content_height - (h - 3)))  # type: ignore
+                last_draw = 0
+                continue
+            if ch in (curses.KEY_PPAGE, 339): # Page Up
+                scroll_pos = max(0, scroll_pos - 10)  # type: ignore
+                last_draw = 0
                 continue
 
             # Enter key — execute command
             if ch in (curses.KEY_ENTER, 10, 13):
-                if input_buf.strip():  # pyre-ignore[16]
-                    fb: str = process_command(xdp, input_buf)
+                if input_buf.strip():  # type: ignore
+                    fb: str = process_command(xdp, input_buf)  # type: ignore
                     if fb == "__QUIT__":
                         break
                     last_feedback = fb
                     feedback_ts = time.time()
                 input_buf = ""
-                last_draw = 0  # force redraw
+                last_draw = 0
                 continue
 
             # Backspace
             if ch in (curses.KEY_BACKSPACE, 127, 8):
-                input_buf = input_buf[:-1]  # pyre-ignore[29]
+                input_buf = input_buf[:-1]  # type: ignore
                 draw_input_bar(stdscr, input_buf)
                 curses.doupdate()
                 continue

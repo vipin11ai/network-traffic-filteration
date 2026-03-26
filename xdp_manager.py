@@ -2,7 +2,7 @@ import time
 import os
 import ipaddress
 import struct
-from typing import Any
+from typing import Any, List, Tuple
 
 try:
     from bcc import BPF  # type: ignore
@@ -289,8 +289,9 @@ class XDPFilter:
                 # as long as get_stats() and get_top_ips() are called in sequence.
                 
             # Sort by count descending and take top 'limit'
-            sorted_ips = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-            top_list = []
+            # Sort IPs by packet count descending and limit the results
+            sorted_ips: list[Tuple[str, int]] = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+            top_list: list[Tuple[str, int, int]] = []
             for ip, count in sorted_ips[:limit]:
                 pps = self._ip_pps.get(ip, 0)
                 top_list.append((ip, count, pps))
